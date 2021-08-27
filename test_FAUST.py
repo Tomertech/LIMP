@@ -1,5 +1,6 @@
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 import scipy.sparse as sp
 import torch 
@@ -18,7 +19,7 @@ from datasets.faust_2500 import Faust2500Dataset
 from models.model import PointNetVAE
 
 
-device = 'cuda'
+device = 'cpu'
 
 dataset_train = Faust2500Dataset('data/faust2500',train=False,test=True,transform_data=False)
 
@@ -45,7 +46,7 @@ loss_step = '_ae_euc'
 loss_step = '_ae_euc_gd1' 
 loss_step = '_ae_euc_gd2' 
 
-vae.load_state_dict(torch.load('pretrained/FAUST_vae_euc_gd.dict'), strict=False)
+vae.load_state_dict(torch.load('pretrained/FAUST_vae_euc_gd.dict', map_location=torch.device('cpu')), strict=False, )
 vae.eval()
 
 alllsp,allx = calc_allsp(vae, device, dataset_train)

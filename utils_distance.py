@@ -8,10 +8,12 @@ import scipy
 import scipy.io as sio
 from scipy.sparse import csr_matrix, csc_matrix
 import os
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
+
 from torch_scatter import scatter_add
 
-
 SAVE_MEMORY = False
+
 
 def VF_adjacency_matrix(V, F):
     """
@@ -21,10 +23,10 @@ def VF_adjacency_matrix(V, F):
     Outputs:
     C: V x F adjacency matrix
     """
-    #tensor type and device
+    # tensor type and device
     device = V.device
     dtype = V.dtype
-    
+
     VF_adj = torch.zeros((V.shape[0], F.shape[0]), dtype=dtype, device=device)
     v_idx = F.view(-1)
     f_idx = torch.arange(F.shape[0]).repeat(3).reshape(3, F.shape[0]).transpose(1, 0).contiguous().view(
@@ -34,134 +36,133 @@ def VF_adjacency_matrix(V, F):
     return VF_adj
 
 
-def _grad_div(V,T):
-    
-    #tensor type and device
+def _grad_div(V, T):
+    # tensor type and device
     device = V.device
     dtype = V.dtype
-    
-    #WARNING not sure about this
-    bs = V.shape[0];
-    V = V.reshape([-1,3])
-    T = T.reshape([-1,3])
 
-    XF = V[T,:].transpose(0,1)
+    # WARNING not sure about this
+    bs = V.shape[0]
+    V = V.reshape([-1, 3])
+    T = T.reshape([-1, 3])
 
-    Na = torch.cross(XF[1]-XF[0],XF[2]-XF[0])
-    A = torch.sqrt(torch.sum(Na**2,-1,keepdim=True))+1e-6
-    N = Na/A
-    dA = 0.5/A
+    XF = V[T, :].transpose(0, 1)
+
+    Na = torch.cross(XF[1] - XF[0], XF[2] - XF[0])  # perpendicular vector of the face
+    A = torch.sqrt(torch.sum(Na ** 2, -1, keepdim=True)) + 1e-6  # calculate the area of the 2*face
+    N = Na / A  # N is the normal vector of the triangle (XF[0], XF[1], XF[2])
+    dA = 0.5 / A
 
     m = T.shape[0]
     n = V.shape[0]
+
     def grad(f):
-        gf = torch.zeros(m,3,f.shape[-1], device=device, dtype=dtype)
+        gf = torch.zeros(m, 3, f.shape[-1], device=device, dtype=dtype)
         for i in range(3):
-            s = (i+1)%3
-            t = (i+2)%3
-            v = -torch.cross(XF[t]-XF[s],N)
+            s = (i + 1) % 3
+            t = (i + 2) % 3
+            v = -torch.cross(XF[t] - XF[s], N)
             if SAVE_MEMORY:
-                gf.add_(f[T[:,i],None,:]*(dA[:,0,None,None]*v[:,:,None])) #Slower less-memeory
+                gf.add_(f[T[:, i], None, :] * (dA[:, 0, None, None] * v[:, :, None]))  # Slower less-memeory
             else:
-                gf.add_(f[T[:,i],None,:]*(dA[:,0,None,None]*v[:,:,None])) 
+                gf.add_(f[T[:, i], None, :] * (dA[:, 0, None, None] * v[:, :, None]))
         return gf
-    
+
     def div(f):
-        gf = torch.zeros(f.shape[-1],n, device=device, dtype=dtype)        
+        gf = torch.zeros(f.shape[-1], n, device=device, dtype=dtype)
         for i in range(3):
-            s = (i+1)%3
-            t = (i+2)%3
-            v = torch.cross(XF[t]-XF[s],N)
+            s = (i + 1) % 3
+            t = (i + 2) % 3
+            v = torch.cross(XF[t] - XF[s], N)
             if SAVE_MEMORY:
-                gf.add_(scatter_add( torch.bmm(v[:,None,:],f)[:,0,:].t(), T[:,i], dim_size=n))# slower but uses less memory
+                gf.add_(scatter_add(torch.bmm(v[:, None, :], f)[:, 0, :].t(), T[:, i],
+                                    dim_size=n))  # slower but uses less memory
             else:
-                gf.add_(scatter_add( (f*v[:,:,None]).sum(1).t(), T[:,i], dim_size=n))
+                gf.add_(scatter_add((f * v[:, :, None]).sum(1).t(), T[:, i], dim_size=n))
         return gf.t()
-    
-#     W = div(grad(torch.eye(n).cuda().double()))
-#     A = scatter_add(A[:,0],T[:,0]).scatter_add(0,T[:,1],A[:,0]).scatter_add(0,T[:,2],A[:,0])/6
+
+    #     W = div(grad(torch.eye(n).cuda().double()))
+    #     A = scatter_add(A[:,0],T[:,0]).scatter_add(0,T[:,1],A[:,0]).scatter_add(0,T[:,2],A[:,0])/6
     return grad, div, A
 
+
 def _geodesics_in_heat(grad, div, W, A, t=1e-1):
-    
-    
-    nsplits=1
+    nsplits = 1
     if SAVE_MEMORY:
-        nsplits=5
-        
-    #tensor type and device
+        nsplits = 5
+
+    # tensor type and device
     device = W.device
     dtype = W.dtype
-    
-    n = W.shape[0]  
-    n_chunk = int(n/nsplits)
-    D = torch.zeros(n,  n, dtype=dtype, device=device)
-    
-    B = torch.diag(A) + t * W
-    
+
+    n = W.shape[0]
+    n_chunk = int(n / nsplits)
+    D = torch.zeros(n, n, dtype=dtype, device=device)
+
+    B = torch.diag(A) + t * W  # make a square tensor with the elements of vertices area (A) as the diagonal, W == Laplacian
+
     for i in range(nsplits):
-        i1 = i*n_chunk
-        i2 = np.min([n,(i+1)*n_chunk]).item()
+        i1 = i * n_chunk
+        i2 = np.min([n, (i + 1) * n_chunk]).item()
 
-        #U = torch.eye(n, dtype=dtype, device=device)
+        # U = torch.eye(n, dtype=dtype, device=device)
         U = torch.zeros(n, i2 - i1, dtype=dtype, device=device)
-        U[i1:i2, :(i2 - i1)] = torch.eye((i2 - i1), dtype=dtype, device=device)
-        f = torch.solve(U, B)[0]
+        U[i1:i2, :(i2 - i1)] = torch.eye((i2 - i1), dtype=dtype, device=device)  # indicator vector?
+        f = torch.solve(U, B)[0]  # part (1) in Geodesic distance calc
         gf = grad(f)
-        gf = gf*(gf.pow(2).sum(1,keepdims=True)+1e-12).rsqrt()
-        
-        Di = torch.solve(div(gf),W)[0]
-        D[:,i1:i2] = Di
+        gf = gf * (gf.pow(2).sum(1, keepdims=True) + 1e-12).rsqrt()  # rsqrt() returns 1 / sqrt(input_i), part (2) in Geodesic distance calc
+
+        Di = torch.solve(div(gf), W)[0]  # part (3) in Geodesic distance calc
+        D[:, i1:i2] = Di
     return D
-
-
-
-
 
 
 def distance_GIH(V, T, t=1e-1):
-    
-    W,A = LBO_slim(V, T)
-    grad,div,N = _grad_div(V,T)
-    
-    D = _geodesics_in_heat(grad,div,W[0],A,t)
-    d = torch.diag(D)[:,None]
-    
-    #WARNIG: original D is not symmetric, it is symmetrized and shifted to have diagonal equal to zero
-    D = (D + D.t()-d-d.t())/2
-#     d = torch.min(D,dim=0)[0][:,None]
-#     D = D-d.t()
-    
+    # W - cotangents matrix, A - vertices area (one third
+    # of all immediately adjacent triangle areas)
+    W, A = LBO_slim(V, T)
+    grad, div, N = _grad_div(V, T)
+
+    D = _geodesics_in_heat(grad, div, W[0], A, t)
+    d = torch.diag(D)[:, None]
+
+    # WARNIG: original D is not symmetric, it is symmetrized and shifted to have diagonal equal to zero
+    D = (D + D.t() - d - d.t()) / 2  # make D symmetric and set the diagonal to zero
+    #     d = torch.min(D,dim=0)[0][:,None]
+    #     D = D-d.t()
+
     return D, grad, div, W, A, N
 
 
-#Not stable
-def distance_BH(V,T):
-    W, S = LBO_slim(V,T)
+# Not stable
+def distance_BH(V, T):
+    W, S = LBO_slim(V, T)
 
-    n=W.shape[1]
-    A = W[0].mm(((1/ (S[:,None]+1e-6) )*W[0]))
-    A[0,:] = 0
-    A[:,0] = 0
-    A[0,0] = 1
+    n = W.shape[1]
+    A = W[0].mm(((1 / (S[:, None] + 1e-6)) * W[0]))
+    A[0, :] = 0
+    A[:, 0] = 0
+    A[0, 0] = 1
 
-    h = torch.eye(n, dtype=W.dtype, device=W.device)- (1/n)*torch.ones(n,n, dtype=W.dtype, device=W.device)
-    h[0,:] = 0
+    h = torch.eye(n, dtype=W.dtype, device=W.device) - (1 / n) * torch.ones(n, n, dtype=W.dtype, device=W.device)
+    h[0, :] = 0
 
-    g = torch.solve(h.double(),A.double())[0].float()
-    g = g - torch.sum(g,0,keepdims=True)/n
+    g = torch.solve(h.double(), A.double())[0].float()
+    g = g - torch.sum(g, 0, keepdims=True) / n
 
     v = torch.diag(g)
-    D = torch.sqrt(torch.relu(v[None,:]+v[:,None] - 2*g))
+    D = torch.sqrt(torch.relu(v[None, :] + v[:, None] - 2 * g))
     return D
 
-def calc_volume(V,T):    
-    T1 = V[:,T[:,:,0],:]
-    T2 = V[:,T[:,:,1],:]
-    T3 = V[:,T[:,:,2],:]
-    XP = torch.cross(T2-T1, T3-T1, -1)
-    T_C = (T1+T2+T3)/3
-    return (XP*T_C/6).sum([1,2,3])
+
+def calc_volume(V, T):
+    T1 = V[:, T[:, :, 0], :]
+    T2 = V[:, T[:, :, 1], :]
+    T3 = V[:, T[:, :, 2], :]
+    XP = torch.cross(T2 - T1, T3 - T1, -1)
+    T_C = (T1 + T2 + T3) / 3
+    return (XP * T_C / 6).sum([1, 2, 3])
+
 
 def LBO_slim(V, F):
     """
@@ -172,10 +173,10 @@ def LBO_slim(V, F):
       C: B x F x 3 list of cotangents corresponding
         angles for triangles, columns correspond to edges 23,31,12
     """
-    #tensor type and device
+    # tensor type and device
     device = V.device
     dtype = V.dtype
-    
+
     indices_repeat = torch.stack([F, F, F], dim=2)
 
     # v1 is the list of first triangles B*F*3, v2 second and v3 third
@@ -223,7 +224,7 @@ def LBO_slim(V, F):
     repeated_batch_idx_f = torch.arange(0, B).repeat(num_faces).reshape(num_faces, B).transpose(1, 0).contiguous().view(
         -1)  # [000...111...BBB...], number of repetitions is: num_faces
     repeated_batch_idx_v = torch.arange(0, B).repeat(num_vertices_full).reshape(num_vertices_full, B).transpose(1,
-                                                                                                      0).contiguous().view(
+                                                                                                                0).contiguous().view(
         -1)  # [000...111...BBB...], number of repetitions is: num_vertices_full
     repeated_vertex_idx_b = torch.arange(0, num_vertices_full).repeat(B)
 
@@ -242,45 +243,43 @@ def LBO_slim(V, F):
     V_area = (torch.bmm(VF_adj, A.unsqueeze(2)) / 3).squeeze()  # VALIDATED
 
     return W, V_area
-    
+
 
 def LBO(V, F):
-    W, V_area = LBO_slim(V,F)
+    W, V_area = LBO_slim(V, F)
     area_matrix = torch.diag_embed(V_area)
     area_matrix_inv = torch.diag_embed(1 / V_area)
     L = torch.bmm(area_matrix_inv, W)  # VALIDATED
     return L, area_matrix, area_matrix_inv, W
 
 
-def normals(V,T):
-    
-    #tensor type and device
+def normals(V, T):
+    # tensor type and device
     device = V.device
     dtype = V.dtype
-    
-    #WARNING not sure about this
+
+    # WARNING not sure about this
     bs = V.shape[0];
-    V = V.reshape([-1,3])
-    T = T.reshape([-1,3])
+    V = V.reshape([-1, 3])
+    T = T.reshape([-1, 3])
 
-    XF = V[T,:].transpose(0,1)
+    XF = V[T, :].transpose(0, 1)
 
-    Na = torch.cross(XF[1]-XF[0],XF[2]-XF[0])
-#     A = torch.sqrt(torch.sum(Na**2,-1,keepdim=True))+1e-6
-    
+    Na = torch.cross(XF[1] - XF[0], XF[2] - XF[0])
+    #     A = torch.sqrt(torch.sum(Na**2,-1,keepdim=True))+1e-6
+
     n = V.shape[0]
     m = T.shape[0]
-#     Na=torch.index_select(Na,0,T.view(-1)).view(m,3,3).sum(1)
-#      
-    Nva = scatter_add( Na.t(), T[:,0], dim_size=n) + \
-          scatter_add( Na.t(), T[:,1], dim_size=n) + \
-          scatter_add( Na.t(), T[:,2], dim_size=n)
-    Nva=Nva.t()
-    
-    A = torch.sqrt(torch.sum(Nva**2,-1,keepdim=True))+1e-6
-    Nva = Nva/A
-    return Nva
+    #     Na=torch.index_select(Na,0,T.view(-1)).view(m,3,3).sum(1)
+    #
+    Nva = scatter_add(Na.t(), T[:, 0], dim_size=n) + \
+          scatter_add(Na.t(), T[:, 1], dim_size=n) + \
+          scatter_add(Na.t(), T[:, 2], dim_size=n)
+    Nva = Nva.t()
 
+    A = torch.sqrt(torch.sum(Nva ** 2, -1, keepdim=True)) + 1e-6
+    Nva = Nva / A
+    return Nva
 
 
 class Eigendecomposition(torch.autograd.Function):
@@ -300,7 +299,7 @@ class Eigendecomposition(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output, grad_output2):
         # grad_output stands for the grad of eigvecs
-        #grad_output2 stands for the grad of eigvecs
+        # grad_output2 stands for the grad of eigvecs
 
         input_matrix, eigvals, eigvecs, K, N = ctx.saved_tensors
         Knp = K.data.numpy()
@@ -310,13 +309,13 @@ class Eigendecomposition(torch.autograd.Function):
         grad_input_matrix = csr_matrix((1, Nnp ** 2), dtype=np.double)
 
         # constructing the indices for the calculation of sparse du/dL
-        #Todo: refactor this call and the same call in optimize.py
-        #This is the path for the ground truth mesh
+        # Todo: refactor this call and the same call in optimize.py
+        # This is the path for the ground truth mesh
         x = sio.loadmat("./../data/eigendecomposition/downsampled_tr_reg_004.mat")
         adj_VV = x['adj_VV']
         print(adj_VV.shape)
         print(Nnp)
-        
+
         L_mask_flatten = csc_matrix.reshape(adj_VV, (1, Nnp ** 2))
         _, col_ind = L_mask_flatten.nonzero()
         Lnnz = col_ind.shape[0]
@@ -365,22 +364,23 @@ Eigendecomposition = Eigendecomposition.apply
 
 
 def calc_euclidean_dist_matrix(x):
-    #OH: x contains the coordinates of the mesh,
-    #x dimensions are [batch_size x num_nodes x 3]
+    # OH: x contains the coordinates of the mesh,
+    # x dimensions are [batch_size x num_nodes x 3]
 
-    #x = x.transpose(2,1)
+    # x = x.transpose(2,1)
     r = torch.sum(x ** 2, dim=2).unsqueeze(2)  # OH: [batch_size  x num_points x 1]
-    r_t = r.transpose(2, 1) # OH: [batch_size x 1 x num_points]
-    inner = torch.bmm(x,x.transpose(2, 1))
-    D = F.relu(r - 2 * inner + r_t)**0.5  # OH: the residual numerical error can be negative ~1e-16
+    r_t = r.transpose(2, 1)  # OH: [batch_size x 1 x num_points]
+    inner = torch.bmm(x, x.transpose(2, 1))
+    D = F.relu(r - 2 * inner + r_t) ** 0.5  # OH: the residual numerical error can be negative ~1e-16
     return D
 
-#def apply_different_rotation_for_each_point(R,x):
-    # OH: R is a torch tensor of dimensions [batch x num_points x 3 x 3]
-    #     x i a torch tensor of dimenstions [batch x num_points x 3    ]
-    #     the result has the same dimensions as x
 
-#initialize the weights of the network for Convolutional layers and batchnorm layers
+# def apply_different_rotation_for_each_point(R,x):
+# OH: R is a torch tensor of dimensions [batch x num_points x 3 x 3]
+#     x i a torch tensor of dimenstions [batch x num_points x 3    ]
+#     the result has the same dimensions as x
+
+# initialize the weights of the network for Convolutional layers and batchnorm layers
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
@@ -389,8 +389,10 @@ def weights_init(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
+
 class AverageValueMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
@@ -405,4 +407,3 @@ class AverageValueMeter(object):
         self.sum += val * n  # OH: weighted sum
         self.count += n  # OH: sum of weights
         self.avg = self.sum / self.count  # OH: weighted average
-

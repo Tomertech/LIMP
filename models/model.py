@@ -20,7 +20,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, opt):
         nn.Module.__init__(self)
-        self.opt = opt;
+        self.opt = opt
         self.fc1 = nn.Sequential(nn.Linear(opt.LATENT_SPACE, 1024), 
                         nn.LeakyReLU(), 
                         nn.Linear(1024, 2048),

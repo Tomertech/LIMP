@@ -80,8 +80,8 @@ class Faust2500Dataset(torch_geometric.data.InMemoryDataset):
         with torch.no_grad():
             for si in range(len(shapes)):
 #                 print('Processing shape %d' % si)
-                V = torch.from_numpy(shapes[si].VERT).float().cuda()[None,...]
-                T = torch.from_numpy(shapes[si].TRIV).long().cuda()[None,...]
+                V = torch.from_numpy(shapes[si].VERT).float()[None,...]
+                T = torch.from_numpy(shapes[si].TRIV).long()[None,...]
                 D, grad, div, W, S, C = distance_GIH(V, T)
                 shapes[si].Dg=D.data.float().cpu()
                 
