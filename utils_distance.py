@@ -28,7 +28,7 @@ def VF_adjacency_matrix(V, F):
     dtype = V.dtype
 
     VF_adj = torch.zeros((V.shape[0], F.shape[0]), dtype=dtype, device=device)
-    v_idx = F.view(-1)
+    v_idx = F.ravel()
     f_idx = torch.arange(F.shape[0]).repeat(3).reshape(3, F.shape[0]).transpose(1, 0).contiguous().view(
         -1)  # [000111...FFF]
 
@@ -329,7 +329,7 @@ class Eigendecomposition(torch.autograd.Function):
             lambdaI = eigvals[k] * torch.eye(N).double()
             M = lambdaI - input_matrix
             t = time.time()
-            P = torch.pinverse(M.cuda())
+            P = torch.pinverse(M)
             elapsed = time.time() - t
             print(elapsed)
 

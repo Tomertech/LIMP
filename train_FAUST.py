@@ -3,17 +3,10 @@
 
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"]="0"
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
-
-import scipy.sparse as sp
-import torch
-import dill
-import pickle
-import torch.nn as nn
 from random import shuffle
 
-import torch_geometric
-from torch_geometric.data.dataloader import DataLoader, DataListLoader
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
+from torch_geometric.data.dataloader import DataListLoader
 
 from misc_utils import *
 from utils_distance import *
@@ -21,7 +14,7 @@ from datasets.faust_2500 import Faust2500Dataset
 
 from models.model import PointNetVAE
 
-device = 'cuda'
+device = 'cpu'
 
 # import shutil
 # shutil.rmtree('data/faust2500/processed')
@@ -113,7 +106,7 @@ def optimize_intep(vae, batch_loader, opt, geoloss=1e1, eucloss=1e1):
     loss1 = torch.zeros(1).to(device)
     loss2 = torch.zeros(1).to(device)
 
-    if geoloss > 0:
+    if geoloss > -1:
         Dg_r, grad, div, W, S, C = distance_GIH(rec, T)
         loss1 = geoloss * torch.mean(((Dg_t - Dg_r.float())) ** 2)
 
@@ -179,8 +172,8 @@ def optimize_disent_int(vae, batch_loader, opt, geoloss=1e0, eucloss=1e0):
     a = torch.rand(1).to(device)
     Dg_t = Dg[0]
 
-    loss1 = torch.zeros(1).cuda()
-    loss2 = torch.zeros(1).cuda()
+    loss1 = torch.zeros(1)
+    loss2 = torch.zeros(1)
 
     localmask = (Dg_t < opt.LOCAL_TH * Dg_t.max()).float()
 
@@ -219,6 +212,7 @@ optimizer = torch.optim.Adam(vae.parameters(), lr=opt.LEARNING_RATE)
 total_loss = 0
 losses = []
 t = time.time()
+
 for i in range(i, NUM_ITERATIONS + 1):
 
     for inner_it in range(virtual_batch_size):
